@@ -70,19 +70,24 @@ Al referirte a una funcionalidad, usá siempre su número de RF (por ejemplo, "R
 
 ## 5. Comandos
 
-Completar con los comandos reales al terminar el corte 1 y mantenerlos actualizados.
+Mantener actualizados. Detalle de configuración en `README.md`.
 
 ```
 npm install
-npm run dev          # servidor de desarrollo
-npm run build        # build de producción
-npm run lint
-npm run typecheck
-npm run test         # Vitest
-npm run test:e2e     # Playwright
-npx supabase start   # Supabase local
-npx supabase db reset
+npm run dev              # servidor de desarrollo (http://localhost:5173)
+npm run build            # typecheck + build de producción
+npm run lint             # ESLint (typescript-eslint strict)
+npm run typecheck        # tsc -b
+npm run test             # Vitest
+npm run test:db          # pgTAP (supabase/tests), requiere Supabase local
+npm run test:e2e         # Playwright en emulación móvil, requiere Supabase local con seed
+npx supabase start       # Supabase local (requiere Docker)
+npx supabase db reset    # reaplica migraciones y seed en local
+npx supabase migration new <nombre>
 ```
+
+- TypeScript está fijado en `~6.0`: typescript-eslint todavía no soporta la 7.
+- Las migraciones se aplican a la nube solo con el workflow manual `db-push.yml`.
 
 ## 6. Convenciones de código
 
@@ -112,7 +117,9 @@ npx supabase db reset
 - **Oferta (RF-22):** la pone la automotora. Valor único en USD, con vigencia y observaciones. Se puede corregir mientras el cliente no haya aceptado, y cada cambio queda como una nueva versión.
 - **Resultado (RF-27):** si el valor final baja más que la tolerancia, exigir motivo de una lista y una foto de respaldo.
 - **Fotos (RF-04, RF-05):** 12 obligatorias, 8 exteriores (frente, trasera, lateral izquierdo, lateral derecho y cuatro esquinas) y 4 interiores (tablero con el cuentakilómetros encendido, asientos delanteros, asientos traseros y baúl). Validación solo en el navegador: formato, resolución mínima, peso, nitidez, brillo y duplicadas. No se envía hasta completar las 12.
-- **Estados de la solicitud (RF-34):** `received`, `info_requested`, `quoted`, `client_interested`, `visit_scheduled`, `inspection_done`, `closed_purchased`, `closed_no_deal`, `expired`. Todo cambio de estado se registra en `status_events` con fecha y usuario.
+- **Estados de la solicitud (RF-34):** `received`, `info_requested`, `quoted`, `client_interested`, `visit_scheduled`, `inspection_done`, `closed_purchased`, `closed_no_deal`, `expired`. Además existe `draft` (borrador, RF-09 y embudo de RF-38), que la automotora nunca ve. Todo cambio de estado se registra en `status_events` con fecha y usuario, mediante un trigger.
+- **Enlace privado (RF-09, RF-13):** un solo token por solicitud, que sirve para retomar el borrador y para el seguimiento. Va en el fragmento de la URL (`/seguimiento#<token>`), para que no llegue a logs ni al Referer, y se consulta por POST con `get_request_by_token`.
+- **Zona horaria:** la de la automotora, en `dealers.timezone` (piloto: `America/Montevideo`).
 - **Verificación de correo (RF-11):** se hace al inicio del formulario con código de 6 dígitos. Desde ahí se guarda el borrador automáticamente (RF-09, vigencia de 30 días).
 - **Plazo de cotización:** la automotora se comprometió a cotizar **el mismo día si la solicitud se envía por la mañana, y la mañana siguiente si se envía por la tarde**.
   - Al enviarse la solicitud, calcular y guardar `quote_due_at` a partir de la hora de envío, la zona horaria de la automotora y los parámetros de `settings`: hora de corte entre mañana y tarde (a confirmar, propuesta 12:00), hora límite de la mañana siguiente, días hábiles y feriados. Toda esa lógica vive en una única función pura de `lib/`, con pruebas para los casos borde (justo en el corte, fin de semana, feriado).
@@ -121,9 +128,34 @@ npx supabase db reset
   - Guardar si la cotización salió dentro del plazo, para la métrica de cumplimiento (RF-38).
 - **Métricas (RF-38):** los eventos necesarios para el embudo (iniciada, correo verificado, fotos completas, enviada, cotizada, aceptada, visita, resultado) se registran desde el corte 2. No depender de herramientas externas de analítica.
 
-## 9. Modelo de datos (orientativo, a refinar en el corte 1)
+## 9. Modelo de datos
 
-`dealers`, `branches` (un solo registro en el piloto, pero se mantiene la tabla para poder sumar sucursales), `profiles` (usuario, rol `dealer_user` o `admin`, `dealer_id`), `vehicle_catalog` (marca y modelo), `requests` (datos del cliente, vehículo, mantenimiento, condición, neumáticos, estado, consentimiento, `token_hash`, vencimiento, `quote_due_at`, `overdue_notified_at`), `photos` (solicitud, ángulo, ruta, hash), `offers` (valor, moneda, vigencia, sucursal, versión), `visit_slots`, `inspection_results`, `status_events`, `internal_notes`, `settings` (tolerancia, vigencias, límites), `email_log`.
+La fuente de verdad son las migraciones en `supabase/migrations/`.
+
+**Creadas en el corte 1:**
+
+- `dealers`: incluye `timezone`.
+- `branches`: un solo registro en el piloto, pero se mantiene la tabla para poder sumar sucursales.
+- `profiles`: solo personal, con rol `dealer_user` o `admin` y `dealer_id`. Los clientes que verifican su correo por OTP no tienen perfil.
+- `settings`: una sola fila tipada con tolerancia, vigencias, retención de fotos, plazo de cotización, días hábiles y elegibilidad.
+- `holidays`
+- `vehicle_catalog`: marca y modelo.
+- `requests`: datos del cliente, vehículo, mantenimiento, condición, neumáticos, estado, consentimiento, vencimiento del borrador, `quote_due_at` y `overdue_notified_at`.
+- `request_tokens`: solo el hash SHA-256 del token, en una tabla aparte con RLS y sin políticas, inaccesible desde la API.
+- `photos`: solicitud, ángulo, ruta y hash.
+- `offers`: valor, moneda, vigencia, sucursal y versión.
+- `status_events`
+
+**Llegan en su corte:** `visit_slots`, `inspection_results`, `internal_notes` y `email_log`.
+
+**Modelo de acceso (RLS):**
+
+- `anon` solo lee configuración y catálogo, y su solicitud por `get_request_by_token`.
+- El cliente (autenticado sin perfil) solo ve y edita los campos de formulario de su borrador.
+- `dealer_user` ve las solicitudes enviadas de su automotora.
+- `admin` lee todo.
+- Los cambios de estado, token y plazos se hacen solo con funciones `security definer`.
+- Las funciones auxiliares viven en el esquema `private`, que no se expone en la API.
 
 ## 10. Fuera de alcance del MVP (no construir)
 
