@@ -6,4 +6,5 @@ dist/
 .DS_Store
 *.log
 supabase/.temp/
-.claude/settings.local.json
+.claude/settings.local.jsonplaywright-report/
+test-results/
